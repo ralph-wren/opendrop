@@ -24,17 +24,17 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime
 
 from opendrop.client import AirDropBrowser, AirDropClient
 from opendrop.config import AirDropConfig, AirDropReceiverFlags
 from opendrop.server import AirDropServer
 
 logging.basicConfig(
-    level=logging.DEBUG,
-    format= '%(asctime)s %(levelname)s '
-            '%(name)s - %(message)s '
-            '%(filename)s:%(lineno)d '
-
+    level=logging.DEBUG,  # 全局 DEBUG 级别
+    format='%(asctime)s %(levelname)s '
+           '%(name)s - %(message)s '
+           '%(filename)s:%(lineno)d '
 )
 logger = logging.getLogger(__name__)
 
@@ -90,13 +90,22 @@ class AirDropCli:
         )
         args = parser.parse_args(args)
 
-        if args.debug:
-            logging.basicConfig(
-                level=logging.DEBUG,
-                format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-            )
-        else:
-            logging.basicConfig(level=logging.INFO, format="%(message)s")
+        # 日志级别已在模块加载时全局设置为 DEBUG（第 32 行）
+        # 这里根据 --debug 参数调整格式
+        # if args.debug:
+        #     # Debug 模式：详细格式
+        #     logging.basicConfig(
+        #         level=logging.DEBUG,
+        #         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        #         force=True  # 强制重新配置
+        #     )
+        # else:
+        #     # 普通模式：保持 DEBUG 级别，但使用简洁格式
+        #     logging.basicConfig(
+        #         level=logging.DEBUG,
+        #         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        #         force=True
+        #     )
 
         # TODO put emails and phone in canonical form (lower case, no '+' sign, etc.)
 
@@ -114,6 +123,27 @@ class AirDropCli:
         self.sending_started = False
         self.discover = []
         self.lock = threading.Lock()
+        
+        # 创建 logs 目录和设备发现日志文件
+        self.logs_dir = os.path.join(os.path.expanduser("~/IdeaProjects/opendrop"), "logs")
+        os.makedirs(self.logs_dir, exist_ok=True)
+        
+        # 每次启动创建新的日志文件，格式：devices_YYYYMMDD_HHMMSS.log
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.device_log_file = os.path.join(self.logs_dir, f"devices_{timestamp}.log")
+        
+        # 创建文件 logger（仅用于设备发现日志）
+        self.device_file_logger = logging.getLogger("device_discovery")
+        self.device_file_logger.setLevel(logging.INFO)
+        # 创建文件处理器
+        file_handler = logging.FileHandler(self.device_log_file, mode='a', encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+        # 设置格式
+        formatter = logging.Formatter('%(asctime)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        self.device_file_logger.addHandler(file_handler)
+        # 防止传播到根 logger（避免重复输出）
+        self.device_file_logger.propagate = False
 
         try:
             if args.action == "receive":
@@ -169,6 +199,7 @@ class AirDropCli:
         使用场景：在发送文件前必须先运行此命令来获取可用的接收器列表
         """
         logger.info("Looking for receivers. Press Ctrl+C to stop ...")
+        logger.info(f"Device discovery log: {self.device_log_file}")
         self.browser = AirDropBrowser(self.config)
         self.browser.start(callback_add=self._found_receiver)
         try:
@@ -291,7 +322,11 @@ class AirDropCli:
                 receiver_name = None
         else:
             receiver_name = None
-        discoverable = receiver_name is not None
+        
+        # 判断设备是否可发现
+        # receiver_name 必须是非空字符串才算可发现
+        # None 或空字符串都表示不可发现
+        discoverable = bool(receiver_name)
 
         index = len(self.discover)
         # AirDrop 接收器（Receiver）节点信息字典
@@ -373,7 +408,10 @@ class AirDropCli:
         self.discover.append(node_info)
         server=info.server
         if discoverable:
-            logger.info(f"Found index {index} ID {identifier} name {receiver_name} hostname {hostname} address {address} port {int(info.port)}")
+            log_msg = f"Found index {index} ID {identifier} discoverable {discoverable} name {receiver_name} hostname {hostname} address {address} port {int(info.port)}"
+            logger.info(log_msg)
+            # 同时写入文件
+            self.device_file_logger.info(log_msg)
         else:
             logger.debug(f"Receiver ID {identifier} is not discoverable")
         self.lock.release()

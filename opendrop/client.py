@@ -677,7 +677,7 @@ class AirDropClient:
             # if name is returned, then receiver is discoverable
             return response.get("ReceiverComputerName")
         else:
-            return "Failed"
+            return None
 
 
 
