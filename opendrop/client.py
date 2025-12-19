@@ -36,6 +36,108 @@ logger = logging.getLogger(__name__)
 
 
 class AirDropBrowser:
+    """
+    AirDrop 设备浏览器 - 使用 mDNS (Multicast DNS) 发现附近的 AirDrop 设备
+    
+    【什么是 mDNS？】
+    mDNS (Multicast DNS，多播 DNS) 是一种零配置网络技术，也称为 Bonjour (Apple) 或 Avahi (Linux)。
+    
+    传统 DNS vs mDNS：
+    ┌──────────────────┬──────────────────────┬──────────────────────────┐
+    │                  │ 传统 DNS              │ mDNS                     │
+    ├──────────────────┼──────────────────────┼──────────────────────────┤
+    │ 服务器依赖         │ 需要 DNS 服务器       │ 无需服务器（零配置）         │
+    │ 工作范围          │ 全球互联网            │ 本地网络（局域网）           │
+    │ 通信方式          │ 单播（点对点）         │ 多播（一对多）              │
+    │ 端口             │ TCP/UDP 53           │ UDP 5353                  │
+    │ 域名后缀          │ .com, .org, etc      │ .local                   │
+    │ 典型应用          │ 访问网站              │ 打印机、AirDrop、设备发现    │
+    └──────────────────┴──────────────────────┴──────────────────────────┘
+    
+    【mDNS 在 AirDrop 中的作用】
+    
+    1️⃣ 服务广播 (Service Advertisement)
+       接收器设备定期向本地网络多播广播自己提供的服务：
+       - 服务类型："_airdrop._tcp.local."
+       - 服务名称："<device_id>._airdrop._tcp.local."
+       - 包含信息：IP 地址、端口、设备属性（flags）等
+       
+       多播地址：
+       - IPv4: 224.0.0.251
+       - IPv6: ff02::fb (本代码使用 IPv6)
+       
+    2️⃣ 服务发现 (Service Discovery)
+       发送者通过 ServiceBrowser 监听网络上的 mDNS 广播：
+       - 监听特定服务类型："_airdrop._tcp.local."
+       - 当有新设备广播时，自动触发回调函数
+       - 获取设备的详细信息（IP、端口、ID、flags 等）
+       
+    3️⃣ 工作流程示例
+       
+       接收器端（运行 opendrop receive）：
+       ┌─────────────────────────────────────────────────┐
+       │ AirDropServer 启动                               │
+       │ ↓                                               │
+       │ zeroconf.register_service()                     │
+       │ ↓                                               │
+       │ 向网络多播广播：                                 │
+       │ "a1b2c3d4e5f6._airdrop._tcp.local."            │
+       │ IP: fe80::1234, Port: 8770, Flags: 0x88        │
+       │ ↓                                               │
+       │ 每隔几秒重复广播（保持存在感）                   │
+       └─────────────────────────────────────────────────┘
+       
+       发送者端（运行 opendrop find）：
+       ┌─────────────────────────────────────────────────┐
+       │ AirDropBrowser 启动                             │
+       │ ↓                                               │
+       │ ServiceBrowser 监听 "_airdrop._tcp.local."     │
+       │ ↓                                               │
+       │ 接收到广播 ← 多播数据包                         │
+       │ ↓                                               │
+       │ 触发 add_service() 回调                         │
+       │ ↓                                               │
+       │ 提取设备信息（IP、端口、ID 等）                 │
+       │ ↓                                               │
+       │ 发送 HTTP Discover 请求获取设备名称             │
+       │ ↓                                               │
+       │ 显示：Found index 0 ID a1b2c3d4e5f6 ...        │
+       └─────────────────────────────────────────────────┘
+    
+    【为什么 AirDrop 需要 mDNS？】
+    
+    ✅ 零配置：无需手动输入 IP 地址，自动发现附近设备
+    ✅ 动态性：设备上线/下线时自动更新，无需刷新
+    ✅ 本地化：只在局域网内工作，保护隐私
+    ✅ 高效性：多播比逐个扫描 IP 更快
+    ✅ 标准化：Apple、Linux、Windows 都支持 mDNS 协议
+    
+    【技术细节】
+    
+    本类使用 python-zeroconf 库实现 mDNS 功能：
+    - Zeroconf：mDNS 核心引擎，处理多播通信
+    - ServiceBrowser：监听特定服务类型的广播
+    - ServiceInfo：封装服务的详细信息
+    
+    网络要求：
+    - 必须在同一局域网内（同一 WiFi 或 AWDL 网络）
+    - 支持 IPv6 多播（本实现使用 IPv6）
+    - 端口 5353 UDP 未被防火墙屏蔽
+    - AWDL 接口（awdl0）在 macOS 上可用，Linux 需要 OWL 项目支持
+    
+    【与传统网络发现的对比】
+    
+    传统方式（扫描 IP）：
+    for ip in range(192.168.1.1, 192.168.1.255):
+        try:
+            connect(ip, 8770)  # 尝试 255 次连接，很慢！
+        except:
+            pass
+    
+    mDNS 方式（监听广播）：
+    browser = ServiceBrowser(...)  # 设备主动告诉你，很快！
+    # 等待设备广播，立即收到通知
+    """
     def __init__(self, config):
         self.ip_addr = AirDropUtil.get_ip_for_interface(config.interface, ipv6=True)
         if self.ip_addr is None:
@@ -48,6 +150,18 @@ class AirDropBrowser:
                     f"Interface {config.interface} does not have an IPv6 address"
                 )
 
+        # 初始化 Zeroconf (mDNS 引擎)
+        # 
+        # Zeroconf 是 mDNS 协议的实现，负责：
+        # 1. 发送和接收多播 DNS 数据包（UDP 5353 端口）
+        # 2. 维护本地服务缓存
+        # 3. 处理服务查询和响应
+        # 4. 管理 mDNS 冲突解决
+        # 
+        # 参数说明：
+        # - interfaces: 指定监听的网络接口（这里只监听 AWDL 接口的 IPv6 地址）
+        # - ip_version: 使用 IPv6（AirDrop 要求 IPv6）
+        # - apple_p2p: 在 macOS 上启用 Apple 点对点网络优化
         self.zeroconf = Zeroconf(
             interfaces=[str(self.ip_addr)],
             ip_version=IPVersion.V6Only,
@@ -60,12 +174,45 @@ class AirDropBrowser:
 
     def start(self, callback_add=None, callback_remove=None):
         """
-        Start the AirDropBrowser to discover other AirDrop devices
+        启动 AirDrop 设备浏览器 - 开始监听 mDNS 广播
+        
+        工作原理：
+        1. 创建 ServiceBrowser 实例，监听 "_airdrop._tcp.local." 服务类型
+        2. ServiceBrowser 向多播地址 ff02::fb 发送查询请求
+        3. 网络中的 AirDrop 设备收到查询后，回复自己的服务信息
+        4. 当收到服务广播时，自动调用 callback_add (即 self.add_service)
+        5. 持续监听，直到调用 stop() 停止
+        
+        mDNS 查询过程：
+        
+        发送者                          网络                    接收器们
+        │                               │                        │
+        │ 发送查询："谁有 _airdrop 服务？"                       │
+        │ ─────────────────────────────>│                        │
+        │   (多播到 ff02::fb:5353)       │                        │
+        │                               │───────────────────────>│ iPhone
+        │                               │───────────────────────>│ iPad  
+        │                               │───────────────────────>│ Mac
+        │                               │                        │
+        │                    我是 iPhone│<───────────────────────│
+        │<──────────────────────────────│  IP: fe80::aaa, Port: 8770
+        │ 触发 add_service()            │                        │
+        │                               │                        │
+        │                      我是 iPad│<───────────────────────│
+        │<──────────────────────────────│  IP: fe80::bbb, Port: 8771
+        │ 触发 add_service()            │                        │
+        
+        参数：
+        - callback_add: 发现新设备时的回调函数（通常是 _found_receiver）
+        - callback_remove: 设备离线时的回调函数
         """
         if self.browser is not None:
             return  # already started
         self.callback_add = callback_add
         self.callback_remove = callback_remove
+        # ServiceBrowser: 监听指定服务类型的 mDNS 广播
+        # "_airdrop._tcp.local.": AirDrop 服务的 mDNS 服务类型标识
+        # self: 回调对象，必须实现 add_service() 和 remove_service() 方法
         self.browser = ServiceBrowser(self.zeroconf, "_airdrop._tcp.local.", self)
 
     def stop(self):

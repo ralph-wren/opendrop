@@ -183,22 +183,90 @@ class AirDropCli:
 
     def _found_receiver(self, info):
         """
-        Callback triggered when an AirDrop service is found.
-
-        :param info: ServiceInfo object containing details about the discovered service.
+        【回调函数】当 mDNS 发现 AirDrop 服务时触发
+        
+        角色定位：
+        这是 AirDropBrowser 的回调函数，当 mDNS 扫描器在网络中发现一个
+        广播 "_airdrop._tcp.local." 服务的设备时，会自动调用此函数。
+        
+        工作流程：
+        1. 接收 ServiceInfo 对象（包含设备的基本信息：IP、端口、服务名称、属性等）
+        2. 创建新线程调用 _send_discover() 进行详细处理
+        3. 立即返回（非阻塞），继续监听其他设备
+        
+        为什么使用多线程？
+        - 因为 _send_discover() 需要发送 HTTP 请求到接收器，可能耗时较长
+        - 如果同步执行，会阻塞 mDNS 扫描，导致无法发现后续的设备
+        - 使用线程后，每个设备的处理都是并行的，互不影响
+        
+        调用者：
+        AirDropBrowser.add_service() → callback_add() → 此函数
+        （见 client.py:75-79，当 ServiceBrowser 发现服务时回调）
+        
+        :param info: ServiceInfo 对象，包含 mDNS 发现的服务详细信息
+                     - info.name: 服务名称，如 "a1b2c3d4e5f6._airdrop._tcp.local."
+                     - info.parsed_addresses(): IP 地址列表
+                     - info.port: 端口号
+                     - info.server: 主机名
+                     - info.properties: 属性字典（包含 flags 等）
         """
         thread = threading.Thread(target=self._send_discover, args=(info,))
         thread.start()
 
     def _send_discover(self, info):
         """
-        Process a discovered service and attempt to retrieve more info.
-
-        This runs in a separate thread. It resolves the address, attempts to
-        send a 'discover' packet if supported to get the receiver's name,
-        and appends the result to the discovery list.
-
-        :param info: ServiceInfo object.
+        【核心处理函数】处理发现的服务并获取详细信息
+        
+        执行环境：
+        这个函数在独立的线程中运行，不会阻塞主线程的 mDNS 扫描。
+        
+        完整工作流程：
+        ① 解析 mDNS 服务信息
+           - 提取 IP 地址（info.parsed_addresses()[0]）
+           - 提取设备 ID（从服务名称 "<id>._airdrop._tcp.local." 中分割）
+           - 提取主机名（info.server）
+           - 提取端口号（info.port）
+           - 提取功能标志（info.properties[b"flags"]）
+        
+        ② 判断设备是否支持 Discover 请求
+           - 检查 flags 中是否有 SUPPORTS_DISCOVER_MAYBE 标志位（0x80）
+           - 如果不支持，跳过 Discover 请求，receiverName 为 None
+        
+        ③ 发送 Discover 请求获取设备名称
+           - 创建 AirDropClient 连接到接收器
+           - 调用 client.send_discover()：
+             * 发送 HTTP POST /Discover 请求
+             * 请求体为 plist 格式（可包含 SenderRecordData）
+             * 接收器返回包含 "ReceiverComputerName" 的 plist 响应
+             * 提取设备名称，如 "John's iPhone"、"张三的 Mac"
+           - 如果请求超时或失败，receiverName 为 None
+        
+        ④ 判断设备可发现性
+           - discoverable = (receiver_name is not None)
+           - 如果成功获取到设备名称，说明设备是“所有人可见”模式
+           - 否则可能是“仅联系人”模式或设备不响应
+        
+        ⑤ 构建 node_info 字典
+           - 将所有收集到的信息封装成字典
+           - 包含：name, address, port, id, flags, discoverable
+        
+        ⑥ 线程安全地添加到发现列表
+           - 获取锁（self.lock.acquire()）
+           - 将 node_info 添加到 self.discover 列表
+           - 记录日志（可发现的设备使用 INFO 级别，不可发现的使用 DEBUG 级别）
+           - 释放锁（self.lock.release()）
+        
+        关键技术点：
+        - 多线程并发：每个设备的处理都在独立线程中，互不阻塞
+        - 线程安全：使用 threading.Lock() 保护共享的 discover 列表
+        - HTTP 通信：通过 HTTPS 协议与接收器交互获取设备名称
+        - 容错处理：对缺少地址、超时等异常情况做了处理
+        
+        与 _found_receiver 的关系：
+        _found_receiver 是“调度器”，_send_discover 是“执行者”
+        _found_receiver 负责快速响应，_send_discover 负责详细处理
+        
+        :param info: ServiceInfo 对象，从 _found_receiver 传递过来
         """
         try:
             address = info.parsed_addresses()[0]  # there should only be one address
@@ -302,8 +370,9 @@ class AirDropCli:
         }
         self.lock.acquire()
         self.discover.append(node_info)
+        server=info.server
         if discoverable:
-            logger.info(f"Found  index {index}  ID {identifier}  name {receiver_name}")
+            logger.info(f"Found  index {index}  ID {identifier}  name {receiver_name} server {server} port {int(info.port)}")
         else:
             logger.debug(f"Receiver ID {identifier} is not discoverable")
         self.lock.release()
