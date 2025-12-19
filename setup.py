@@ -42,7 +42,7 @@ setup(
         "libarchive-c",
         "requests",
         "requests_toolbelt",
-        "zeroconf>=0.24.2",
+        "zeroconf==0.28.8",
     ],
     entry_points={
         "console_scripts": [

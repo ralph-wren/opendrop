@@ -25,19 +25,40 @@ import sys
 import threading
 import time
 
-from .client import AirDropBrowser, AirDropClient
-from .config import AirDropConfig, AirDropReceiverFlags
-from .server import AirDropServer
+from opendrop.client import AirDropBrowser, AirDropClient
+from opendrop.config import AirDropConfig, AirDropReceiverFlags
+from opendrop.server import AirDropServer
 
+logging.basicConfig(
+    level=logging.DEBUG,
+    format= '%(asctime)s %(levelname)s '
+            '%(name)s - %(message)s'
+            '%(filename)s:%(lineno)d '
+
+)
 logger = logging.getLogger(__name__)
 
 
 def main():
+    """
+    Main entry point for the OpenDrop command line interface.
+    """
     AirDropCli(sys.argv[1:])
 
 
 class AirDropCli:
+    """
+    Command Line Interface for OpenDrop.
+
+    This class handles argument parsing and execution of the three main modes:
+    receive, find, and send.
+    """
     def __init__(self, args):
+        """
+        Initialize the AirDrop CLI.
+
+        :param args: List of command line arguments (usually sys.argv[1:])
+        """
         parser = argparse.ArgumentParser()
         parser.add_argument("action", choices=["receive", "find", "send"])
         parser.add_argument("-f", "--file", help="File to be sent")
@@ -117,6 +138,12 @@ class AirDropCli:
                 self.server.stop()
 
     def find(self):
+        """
+        Discover other AirDrop-compatible devices.
+
+        Starts the AirDrop browser to look for services and saves the results
+        to a JSON file (discovery report). Runs until interrupted (Ctrl+C).
+        """
         logger.info("Looking for receivers. Press Ctrl+C to stop ...")
         self.browser = AirDropBrowser(self.config)
         self.browser.start(callback_add=self._found_receiver)
@@ -131,10 +158,24 @@ class AirDropCli:
                 json.dump(self.discover, f)
 
     def _found_receiver(self, info):
+        """
+        Callback triggered when an AirDrop service is found.
+
+        :param info: ServiceInfo object containing details about the discovered service.
+        """
         thread = threading.Thread(target=self._send_discover, args=(info,))
         thread.start()
 
     def _send_discover(self, info):
+        """
+        Process a discovered service and attempt to retrieve more info.
+
+        This runs in a separate thread. It resolves the address, attempts to
+        send a 'discover' packet if supported to get the receiver's name,
+        and appends the result to the discovery list.
+
+        :param info: ServiceInfo object.
+        """
         try:
             address = info.parsed_addresses()[0]  # there should only be one address
         except IndexError:
@@ -178,11 +219,22 @@ class AirDropCli:
         self.lock.release()
 
     def receive(self):
+        """
+        Start the AirDrop server to receive files.
+
+        Initializes and starts the HTTP server to listen for incoming connections.
+        """
         self.server = AirDropServer(self.config)
         self.server.start_service()
         self.server.start_server()
 
     def send(self):
+        """
+        Send a file to a receiver.
+
+        Resolves the receiver info, connects to the receiver, sends an 'Ask' request,
+        and if accepted, performs the file upload.
+        """
         info = self._get_receiver_info()
         if info is None:
             return
@@ -199,6 +251,14 @@ class AirDropCli:
         logger.info("Uploading has been successful")
 
     def _get_receiver_info(self):
+        """
+        Retrieve receiver information from the discovery report.
+
+        The receiver can be specified by index (in the list), ID, or hostname.
+        Requires that 'opendrop find' has been run previously to generate the report.
+
+        :return: A dictionary containing receiver info, or None if not found/error.
+        """
         if not os.path.exists(self.config.discovery_report):
             logger.error("No discovery report exists, please run 'opendrop find' first")
             return None
@@ -232,3 +292,6 @@ class AirDropCli:
             "Receiver does not exist (check -r,--receiver format or try 'opendrop find' again"
         )
         return None
+
+if __name__ == '__main__':
+    main()

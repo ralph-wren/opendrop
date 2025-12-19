@@ -95,40 +95,42 @@ class AirDropClient:
 
     def send_POST(self, url, body, headers=None):
         logger.debug(f"Send {url} request")
-
-        AirDropUtil.write_debug(
-            self.config, body, f"send_{url.lower().strip('/')}_request.plist"
-        )
-
-        _headers = self._get_headers()
-        if headers is not None:
-            for key, val in headers.items():
-                _headers[key] = val
-        if self.http_conn is None:
-            # Use single connection
-            self.http_conn = HTTPSConnectionAWDL(
-                self.receiver_host,
-                self.receiver_port,
-                interface_name=self.config.interface,
-                context=self.config.get_ssl_context(),
+        try:
+            AirDropUtil.write_debug(
+                self.config, body, f"send_{url.lower().strip('/')}_request.plist"
             )
-        self.http_conn.request("POST", url, body=body, headers=_headers)
-        http_resp = self.http_conn.getresponse()
 
-        response_bytes = http_resp.read()
-        AirDropUtil.write_debug(
-            self.config,
-            response_bytes,
-            f"send_{url.lower().strip('/')}_response.plist",
-        )
+            _headers = self._get_headers()
+            if headers is not None:
+                for key, val in headers.items():
+                    _headers[key] = val
+            if self.http_conn is None:
+                # Use single connection
+                self.http_conn = HTTPSConnectionAWDL(
+                    self.receiver_host,
+                    self.receiver_port,
+                    interface_name=self.config.interface,
+                    context=self.config.get_ssl_context(),
+                )
+            self.http_conn.request("POST", url, body=body, headers=_headers)
+            http_resp = self.http_conn.getresponse()
 
-        if http_resp.status != 200:
-            status = False
-            logger.debug(f"{url} request failed: {http_resp.status}")
-        else:
-            status = True
-            logger.debug(f"{url} request successful")
-        return status, response_bytes
+            response_bytes = http_resp.read()
+            AirDropUtil.write_debug(
+                self.config,
+                response_bytes,
+                f"send_{url.lower().strip('/')}_response.plist",
+            )
+            if http_resp.status != 200:
+                status = False
+                logger.debug(f"{url} request failed: {http_resp.status}")
+            else:
+                status = True
+                logger.debug(f"{url} request successful")
+            return status, response_bytes
+        except Exception as e:
+            return False, None
+
 
     def send_discover(self):
         discover_body = {}
@@ -139,10 +141,14 @@ class AirDropClient:
             discover_body, fmt=plistlib.FMT_BINARY  # pylint: disable=no-member
         )
         _, response_bytes = self.send_POST("/Discover", discover_plist_binary)
-        response = plistlib.loads(response_bytes)
+        if response_bytes is not None:
+            response = plistlib.loads(response_bytes)
+            # if name is returned, then receiver is discoverable
+            return response.get("ReceiverComputerName")
+        else:
+            return "Failed"
 
-        # if name is returned, then receiver is discoverable
-        return response.get("ReceiverComputerName")
+
 
     def send_ask(self, file_path, is_url=False, icon=None):
         ask_body = {
