@@ -139,10 +139,34 @@ class AirDropCli:
 
     def find(self):
         """
-        Discover other AirDrop-compatible devices.
-
-        Starts the AirDrop browser to look for services and saves the results
-        to a JSON file (discovery report). Runs until interrupted (Ctrl+C).
+        【find 命令】发现附近的 AirDrop 设备
+        
+        命令格式：opendrop find
+        
+        功能说明：
+        这是使用 OpenDrop 发送文件的第一步。find 命令会扫描本地网络，
+        发现所有运行 AirDrop 服务的设备（接收器），并将发现的设备信息
+        保存到 JSON 文件中供后续的 send 命令使用。
+        
+        工作流程：
+        1. 启动 AirDropBrowser（mDNS 服务浏览器）
+        2. 持续监听网络中广播的 AirDrop 服务（_airdrop._tcp.local.）
+        3. 每发现一个设备就调用 _found_receiver() 回调函数
+        4. 对每个设备发送 Discover 请求获取设备名称
+        5. 将所有发现的设备信息保存到 discovery_report JSON 文件
+        6. 按 Ctrl+C 停止扫描
+        
+        输出示例：
+        Looking for receivers. Press Ctrl+C to stop ...
+        Found  index 0  ID eccb2f2dcfe7  name John's iPhone
+        Found  index 1  ID e63138ac6ba8  name Jane's MacBook Pro
+        
+        保存文件：~/.opendrop/discovery.json
+        包含字段：index（序号）、ID（设备标识符）、name（设备名称）、
+                 address（IP地址）、port（端口）、flags（功能标志）、
+                 discoverable（是否可发现）
+        
+        使用场景：在发送文件前必须先运行此命令来获取可用的接收器列表
         """
         logger.info("Looking for receivers. Press Ctrl+C to stop ...")
         self.browser = AirDropBrowser(self.config)
@@ -271,9 +295,32 @@ class AirDropCli:
 
     def receive(self):
         """
-        Start the AirDrop server to receive files.
-
-        Initializes and starts the HTTP server to listen for incoming connections.
+        【receive 命令】启动 AirDrop 服务接收文件
+        
+        命令格式：opendrop receive
+        
+        功能说明：
+        将本机设置为 AirDrop 接收器模式，等待其他设备发送文件。
+        这个命令会让你的电脑变成一个可被其他 AirDrop 设备发现和发送文件的目标。
+        
+        工作流程：
+        1. 创建 AirDropServer 实例（HTTPS 服务器）
+        2. 通过 mDNS 在本地网络广播 AirDrop 服务（让其他设备能发现你）
+        3. 启动 HTTPS 服务器监听端口（默认 8770-8779）
+        4. 自动接收所有传入的文件（无需手动确认）
+        5. 将接收的文件保存到当前工作目录
+        
+        运行效果：
+        - 你的电脑会出现在其他设备的 AirDrop 列表中
+        - iPhone/Mac 可以向你的电脑发送文件
+        - 接收的文件自动保存在运行命令的目录下
+        
+        注意事项：
+        - 程序会一直运行直到手动停止（Ctrl+C）
+        - 自动接受所有文件，没有安全验证（实验性功能）
+        - 需要 AWDL 接口（awdl0）可用
+        
+        使用场景：让 Linux/Mac 电脑接收来自 iPhone/iPad/Mac 的文件
         """
         self.server = AirDropServer(self.config)
         self.server.start_service()
@@ -281,10 +328,50 @@ class AirDropCli:
 
     def send(self):
         """
-        Send a file to a receiver.
-
-        Resolves the receiver info, connects to the receiver, sends an 'Ask' request,
-        and if accepted, performs the file upload.
+        【send 命令】发送文件到指定的接收器
+        
+        命令格式：opendrop send -r <接收器> -f <文件路径>
+        可选参数：--url（发送网址链接而非文件）
+        
+        功能说明：
+        这是使用 OpenDrop 发送文件的第二步（第一步是 find）。
+        send 命令会将指定的文件发送到之前通过 find 命令发现的接收器设备。
+        
+        参数说明：
+        -r, --receiver: 指定接收器，可以是以下三种形式之一：
+            - index（序号）：例如 0, 1, 2（find 命令输出中的 index）
+            - ID（设备标识符）：例如 eccb2f2dcfe7（12位十六进制）
+            - name（设备名称）：例如 "John's iPhone"（设备显示名称）
+        -f, --file: 要发送的文件路径或 URL
+        --url: 标记 -f 参数是 URL 链接而非文件路径
+        
+        工作流程：
+        1. 从 discovery.json 读取接收器信息（必须先运行 find 命令）
+        2. 根据 -r 参数匹配目标接收器（按 index → ID → name 顺序尝试）
+        3. 创建 AirDropClient 连接到接收器的 IP 和端口
+        4. 发送 Ask 请求询问接收器是否接受文件
+        5. 如果接收器接受，执行文件上传（Upload）
+        6. 显示上传结果（成功或失败）
+        
+        使用示例：
+        opendrop send -r 0 -f /path/to/photo.jpg        # 按序号发送文件
+        opendrop send -r eccb2f2dcfe7 -f document.pdf  # 按 ID 发送文件
+        opendrop send -r "John's iPhone" -f video.mp4  # 按名称发送文件
+        opendrop send -r 0 -f https://owlink.org --url # 发送网址链接
+        
+        输出示例：
+        Asking receiver to accept ...
+        Receiver accepted
+        Uploading file ...
+        Uploading has been successful
+        
+        注意事项：
+        - 必须先运行 opendrop find 生成设备列表
+        - discovery.json 超过 60 秒会警告（建议重新 find）
+        - 接收器可以拒绝接收（会显示 "Receiver declined"）
+        - 仅支持单个文件，不支持同时发送多个文件
+        
+        使用场景：从 Linux/Mac 电脑向 iPhone/iPad/Mac 发送文件
         """
         info = self._get_receiver_info()
         if info is None:
