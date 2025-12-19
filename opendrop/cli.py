@@ -32,7 +32,7 @@ from opendrop.server import AirDropServer
 logging.basicConfig(
     level=logging.DEBUG,
     format= '%(asctime)s %(levelname)s '
-            '%(name)s - %(message)s'
+            '%(name)s - %(message)s '
             '%(filename)s:%(lineno)d '
 
 )
@@ -263,9 +263,24 @@ class AirDropCli:
         #       - 使用场景：创建 AirDropClient 时作为连接端口（第 248 行）
         #
         # id: 接收器的唯一标识符（12 位十六进制字符串，例如："a1b2c3d4e5f6"）
+        #     - 来源：从 mDNS 服务名称中提取（第 208 行：info.name.split(".")[0]）
+        #     - 格式：mDNS 服务名称为 "<service_id>._airdrop._tcp.local."
+        #              例如："a1b2c3d4e5f6._airdrop._tcp.local."
+        #     - 与 MAC 地址的关系：
+        #       ✓ 对于真实的 Apple 设备（iPhone/Mac）：
+        #         这个 ID 通常基于 AWDL 接口的 MAC 地址派生（awdl0 的虚拟 MAC）
+        #         但不完全等于 MAC 地址，可能经过了某种转换或哈希处理
+        #       ✓ 对于 OpenDrop：
+        #         这是一个随机生成的 6 字节（48 位）十六进制字符串（见 config.py:84）
+        #         格式：random.randint(0, 0xFFFFFFFFFFFF) 转为 12 位十六进制
+        #         与任何网卡的 MAC 地址无关，纯粹是随机标识符
         #     - 用途：设备的唯一身份标识，即使设备名称相同也能区分
-        #     - 获取方式：从 mDNS 服务名称中提取（第 184 行）
-        #     - 使用场景：用户可以通过 ID 精确指定接收器（第 289-292 行）
+        #     - 使用场景：用户可以通过 ID 精确指定接收器（第 377-380 行）
+        #
+        #     【补充说明】
+        #     Apple 原生 AirDrop 的 service_id 可能与 awdl0 接口的 MAC 地址相关，
+        #     但 OpenDrop 为了兼容性和隐私考虑，使用随机生成的 ID。
+        #     这个 ID 在每次启动 OpenDrop 时都会重新随机生成（除非手动指定）。
         #
         # flags: 接收器的功能标志位（整数，二进制标志位组合）
         #        - 用途：标识接收器支持的 AirDrop 功能特性
