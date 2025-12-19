@@ -276,7 +276,7 @@ class AirDropCli:
         identifier = info.name.split(".")[0]
         hostname = info.server
         port = int(info.port)
-        logger.debug(f"AirDrop service found: {hostname}, {address}:{port}, ID {id}")
+        logger.debug(f"AirDrop service found: {hostname}, {address}:{port}, ID {identifier}")
         client = AirDropClient(self.config, (address, int(port)))
         try:
             flags = int(info.properties[b"flags"])
@@ -362,6 +362,7 @@ class AirDropCli:
         #               - 使用场景：过滤显示可用的接收器，不可发现的设备不会在列表中高亮显示（第 222-225 行）
         node_info = {
             "name": receiver_name,
+            "hostname":hostname,
             "address": address,
             "port": port,
             "id": identifier,
@@ -372,7 +373,7 @@ class AirDropCli:
         self.discover.append(node_info)
         server=info.server
         if discoverable:
-            logger.info(f"Found  index {index}  ID {identifier}  name {receiver_name} server {server} port {int(info.port)}")
+            logger.info(f"Found index {index} ID {identifier} name {receiver_name} hostname {hostname} address {address} port {int(info.port)}")
         else:
             logger.debug(f"Receiver ID {identifier} is not discoverable")
         self.lock.release()

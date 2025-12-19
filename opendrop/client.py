@@ -282,30 +282,28 @@ class AirDropBrowser:
                 raise RuntimeError(
                     f"Interface {config.interface} does not have an IPv6 address"
                 )
+        
+        # 初始化 Zeroconf (mDNS 引擎)
+        # 
+        # Zeroconf 是 mDNS 协议的实现，负责：
+        # 1. 发送和接收多播 DNS 数据包（UDP 5353 端口）
+        # 2. 维护本地服务缓存
+        # 3. 处理服务查询和响应
+        # 4. 管理 mDNS 冲突解决
+        # 
+        # 参数说明：
+        # - interfaces: 指定监听的网络接口（这里只监听 AWDL 接口的 IPv6 地址）
+        # - ip_version: 使用 IPv6（AirDrop 要求 IPv6）
+        # - apple_p2p: 在 macOS 上启用 Apple 点对点网络优化
+        self.zeroconf = Zeroconf(
+            interfaces=[str(self.ip_addr)],
+            ip_version=IPVersion.V6Only,
+            apple_p2p=platform.system() == "Darwin",
+        )
 
-    """
-    初始化 Zeroconf (mDNS 引擎)
-    
-    Zeroconf 是 mDNS 协议的实现，负责：
-    1. 发送和接收多播 DNS 数据包（UDP 5353 端口）
-    2. 维护本地服务缓存
-    3. 处理服务查询和响应
-    4. 管理 mDNS 冲突解决
-    
-    参数说明：
-    - interfaces: 指定监听的网络接口（这里只监听 AWDL 接口的 IPv6 地址）
-    - ip_version: 使用 IPv6（AirDrop 要求 IPv6）
-    - apple_p2p: 在 macOS 上启用 Apple 点对点网络优化
-    self.zeroconf = Zeroconf(
-        interfaces=[str(self.ip_addr)],
-        ip_version=IPVersion.V6Only,
-        apple_p2p=platform.system() == "Darwin",
-    )
-
-    self.callback_add = None
-    self.callback_remove = None
-    self.browser = None
-    """
+        self.callback_add = None
+        self.callback_remove = None
+        self.browser = None
     def start(self, callback_add=None, callback_remove=None):
         """
         启动 AirDrop 设备浏览器 - 开始监听 mDNS 广播
