@@ -220,6 +220,47 @@ class AirDropCli:
         这是 AirDropBrowser 的回调函数，当 mDNS 扫描器在网络中发现一个
         广播 "_airdrop._tcp.local." 服务的设备时，会自动调用此函数。
         
+        【info 参数的完整传递链】
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 1. 网络中的 iPhone 广播 mDNS 服务                            │
+        │    服务名称: "ac3995fe3af6._airdrop._tcp.local."             │
+        │    包含: IP、端口、hostname、flags 等信息                     │
+        └─────────────────────────────────────────────────────────────┘
+                              ↓ (UDP 5353 多播)
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 2. python-zeroconf 库的 ServiceBrowser 监听到广播            │
+        │    (这是第三方库，在后台自动运行)                             │
+        └─────────────────────────────────────────────────────────────┘
+                              ↓
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 3. ServiceBrowser 调用 AirDropBrowser.add_service()         │
+        │    传入参数: (zeroconf, service_type, name)                  │
+        │    在 client.py:355                                          │
+        └─────────────────────────────────────────────────────────────┘
+                              ↓
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 4. add_service() 从 zeroconf 获取完整 ServiceInfo            │
+        │    info = zeroconf.get_service_info(service_type, name)      │
+        │    在 client.py:356                                          │
+        └─────────────────────────────────────────────────────────────┘
+                              ↓
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 5. add_service() 调用 callback_add(info)                    │
+        │    即 self.callback_add(info)                                │
+        │    在 client.py:358-359                                      │
+        └─────────────────────────────────────────────────────────────┘
+                              ↓
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 6. callback_add 就是本函数 _found_receiver                   │
+        │    因为在 find() 中设置了 (cli.py:204):                     │
+        │    self.browser.start(callback_add=self._found_receiver)     │
+        └─────────────────────────────────────────────────────────────┘
+                              ↓
+        ┌─────────────────────────────────────────────────────────────┐
+        │ 7. _found_receiver(info) 被调用 ← 你在这里！                 │
+        │    此时 info 就是 ServiceInfo 对象                            │
+        └─────────────────────────────────────────────────────────────┘
+        
         工作流程：
         1. 接收 ServiceInfo 对象（包含设备的基本信息：IP、端口、服务名称、属性等）
         2. 创建新线程调用 _send_discover() 进行详细处理
@@ -232,13 +273,13 @@ class AirDropCli:
         
         调用者：
         AirDropBrowser.add_service() → callback_add() → 此函数
-        （见 client.py:75-79，当 ServiceBrowser 发现服务时回调）
+        （见 client.py:355-359，当 ServiceBrowser 发现服务时回调）
         
         :param info: ServiceInfo 对象，包含 mDNS 发现的服务详细信息
                      - info.name: 服务名称，如 "a1b2c3d4e5f6._airdrop._tcp.local."
                      - info.parsed_addresses(): IP 地址列表
                      - info.port: 端口号
-                     - info.server: 主机名
+                     - info.server: 主机名（hostname）
                      - info.properties: 属性字典（包含 flags 等）
         """
         thread = threading.Thread(target=self._send_discover, args=(info,))
@@ -310,6 +351,26 @@ class AirDropCli:
         logger.debug(f"AirDrop service found: {hostname}, {address}:{port}, ID {identifier}")
         client = AirDropClient(self.config, (address, int(port)))
         try:
+            # 从 mDNS 属性中提取 flags 标志位
+            # flags 是一个位掩码，表示设备支持的 AirDrop 功能
+            # 
+            # 例如：properties = {b'flags': b'13311'}
+            # 13311 (十进制) = 0x33FF (十六进制) = 0011001111111111 (二进制)
+            # 
+            # 常见标志位：
+            # - 0x01 (1):    SUPPORTS_URL - 支持 URL 链接
+            # - 0x02 (2):    SUPPORTS_DVZIP
+            # - 0x04 (4):    SUPPORTS_PIPELINING - 支持流水线传输
+            # - 0x08 (8):    SUPPORTS_MIXED_TYPES - 支持混合类型文件
+            # - 0x80 (128):  SUPPORTS_DISCOVER_MAYBE - 支持 /Discover 请求（最重要！）
+            # - 0x100 (256): SUPPORTS_UNKNOWN3
+            # - 0x200 (512): SUPPORTS_ASSET_BUNDLE - 支持资源包
+            # 
+            # 判断方式（位运算 AND）：
+            # if flags & 0x80:  # 检查是否支持 Discover
+            #     设备处于"所有人"模式，可以获取设备名称
+            # else:
+            #     设备可能处于"仅限联系人"模式
             flags = int(info.properties[b"flags"])
         except KeyError:
             # TODO in some cases, `flags` are not set in service info; for now we'll try anyway
@@ -319,6 +380,10 @@ class AirDropCli:
             try:
                 receiver_name = client.send_discover()
             except TimeoutError:
+                logger.warning(f"Discover timeout for device {identifier} ({hostname}), possibly 'Contacts Only' mode or network issue")
+                receiver_name = None
+            except Exception as e:
+                logger.warning(f"Discover failed for device {identifier} ({hostname}): {e}")
                 receiver_name = None
         else:
             receiver_name = None
@@ -407,13 +472,31 @@ class AirDropCli:
         self.lock.acquire()
         self.discover.append(node_info)
         server=info.server
-        if discoverable:
-            log_msg = f"Found index {index} ID {identifier} discoverable {discoverable} name {receiver_name} hostname {hostname} address {address} port {int(info.port)}"
-            logger.info(log_msg)
-            # 同时写入文件
-            self.device_file_logger.info(log_msg)
-        else:
-            logger.debug(f"Receiver ID {identifier} is not discoverable")
+        # if discoverable:
+        # 解析 flags 标志位的含义
+        flag_meanings = []
+        if flags & AirDropReceiverFlags.SUPPORTS_URL:
+            flag_meanings.append("URL")
+        if flags & AirDropReceiverFlags.SUPPORTS_DVZIP:
+            flag_meanings.append("DVZIP")
+        if flags & AirDropReceiverFlags.SUPPORTS_PIPELINING:
+            flag_meanings.append("Pipelining")
+        if flags & AirDropReceiverFlags.SUPPORTS_MIXED_TYPES:
+            flag_meanings.append("MixedTypes")
+        if flags & AirDropReceiverFlags.SUPPORTS_IRIS:
+            flag_meanings.append("Iris")
+        if flags & AirDropReceiverFlags.SUPPORTS_DISCOVER_MAYBE:
+            flag_meanings.append("Discover")
+        if flags & AirDropReceiverFlags.SUPPORTS_ASSET_BUNDLE:
+            flag_meanings.append("AssetBundle")
+
+        flags_str = f"{flags}(0x{flags:X})" if flags else "None"
+        features = ",".join(flag_meanings) if flag_meanings else "None"
+
+        log_msg = f"Found index {index} ID {identifier} discoverable {discoverable} name {receiver_name} hostname {hostname} address {address} port {int(info.port)} flags {flags_str} features [{features}]"
+        logger.info(log_msg)
+        # 同时写入文件
+        self.device_file_logger.info(log_msg)
         self.lock.release()
 
     def receive(self):
